@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>devteam-board</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>devteam-board</h1>
+      <span id="conn-status" class="conn-status ok">live</span>
+    </div>
+    <div class="actions">
+      <button id="new-ticket-btn" class="primary">+ New ticket</button>
+    </div>
+  </header>
+
+  <main id="board">
+    <section class="column" data-status="backlog">
+      <h2>Backlog</h2>
+      <div class="cards" id="col-backlog"></div>
+    </section>
+    <section class="column" data-status="analytics">
+      <h2>Analytics</h2>
+      <div class="cards" id="col-analytics"></div>
+    </section>
+    <section class="column" data-status="development">
+      <h2>Development</h2>
+      <div class="cards" id="col-development"></div>
+    </section>
+    <section class="column" data-status="testing">
+      <h2>Testing</h2>
+      <div class="cards" id="col-testing"></div>
+    </section>
+    <section class="column" data-status="admin">
+      <h2>Admin</h2>
+      <div class="cards" id="col-admin"></div>
+    </section>
+    <section class="column" data-status="completed">
+      <h2>Done</h2>
+      <div class="cards" id="col-completed"></div>
+    </section>
+    <section class="column" data-status="failed">
+      <h2>Failed</h2>
+      <div class="cards" id="col-failed"></div>
+    </section>
+  </main>
+
+  <!-- New ticket modal -->
+  <div id="new-ticket-modal" class="modal hidden">
+    <div class="modal-body">
+      <h2>New ticket</h2>
+      <form id="new-ticket-form">
+        <label>Title <input name="title" required placeholder="Add OAuth login" /></label>
+        <label>Repo path (workdir) <input name="workdir" required placeholder="/Users/me/projects/api" /></label>
+        <label>Base branch <input name="base" value="main" /></label>
+        <label>Branch name (optional) <input name="branch" placeholder="auto from title if blank" /></label>
+        <div class="row">
+          <button type="button" id="new-ticket-cancel">Cancel</button>
+          <button type="submit" class="primary">Create &amp; start</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Detail modal -->
+  <div id="detail-modal" class="modal hidden">
+    <div class="modal-body wide">
+      <header class="modal-head">
+        <h2 id="detail-title">…</h2>
+        <button id="detail-close">×</button>
+      </header>
+      <div class="modal-grid">
+        <aside id="detail-meta"></aside>
+        <section>
+          <h3>Live logs <span id="logs-status" class="muted"></span></h3>
+          <pre id="logs"></pre>
+        </section>
+      </div>
+      <footer class="modal-foot">
+        <button id="btn-cancel" class="danger">Cancel pipeline</button>
+        <button id="btn-delete" class="danger">Delete (kill + remove worktree)</button>
+        <button id="btn-refresh">Refresh</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

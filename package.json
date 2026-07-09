@@ -1,0 +1,31 @@
+{
+  "name": "devteam-board",
+  "version": "0.1.0",
+  "description": "Jira-like web UI for running multiple devteam (qwencode) pipelines concurrently. Worktree-per-ticket supervisor with polling.",
+  "type": "module",
+  "main": "src/board.js",
+  "bin": {
+    "devteam-board": "src/board.js"
+  },
+  "scripts": {
+    "start": "node src/board.js",
+    "dev": "node --watch src/board.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.1",
+    "express": "^4.21.0",
+    "lowdb": "^7.0.1"
+  },
+  "keywords": [
+    "devteam",
+    "qwencode",
+    "qwen",
+    "kanban",
+    "ai-agents",
+    "supervisor"
+  ],
+  "license": "MIT"
+}
