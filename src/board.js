@@ -36,7 +36,7 @@ const STAGES = ['analytics', 'development', 'testing', 'admin'];
 
 function applyEvent(ticket, emit) {
   const now = Date.now();
-  switch (emit.type) {
+  switch (emit.kind || emit.type) {
     case 'stage_started':
       ticket.stage = emit.stage;
       ticket.substage = null;
@@ -47,13 +47,11 @@ function applyEvent(ticket, emit) {
       ticket.stage = emit.stage;
       ticket.stagesCompleted = Array.from(new Set([...(ticket.stagesCompleted || []), emit.stage]));
       ticket.lastActivityAt = now;
-      // advance to next stage or complete
       const idx = STAGES.indexOf(emit.stage);
       if (idx === STAGES.length - 1) {
         ticket.status = 'completed';
         ticket.finishedAt = now;
       } else {
-        // next stage will be set by its stage_started emit
         ticket.substage = null;
       }
       return true;
@@ -71,7 +69,7 @@ function applyEvent(ticket, emit) {
       ticket.finishedAt = now;
       return true;
     case 'exit':
-      if (ticket.status === 'running') {
+      if (ticket.status === 'running' || ticket.status === 'awaiting_approval') {
         ticket.status = emit.code === 0 ? 'completed' : 'failed';
         ticket.finishedAt = now;
       }
@@ -80,7 +78,7 @@ function applyEvent(ticket, emit) {
       return true;
     case 'hitl_paused':
       ticket.status = 'awaiting_approval';
-      ticket.hitlReason = emit.groups[0] || emit.raw;
+      ticket.hitlReason = emit.groups?.[0] || emit.raw;
       ticket.lastActivityAt = now;
       return true;
   }
@@ -90,9 +88,46 @@ function applyEvent(ticket, emit) {
 const onEvent = (planId, ticketId, emit) => {
   const t = getTicket(ticketId);
   if (!t) return;
+  const kind = emit.kind || emit.type;
+
+  // Side-channel accumulators (independent of state machine).
+  if (kind === 'tool_call') {
+    t.toolCalls = (t.toolCalls || []).concat([{
+      at: Date.now(),
+      id: emit.id,
+      name: emit.name,
+      input: emit.input || {},
+      stage: emit.stage,
+      output: null,
+      isError: false,
+    }]).slice(-200);
+  } else if (kind === 'tool_result') {
+    const calls = t.toolCalls || [];
+    for (let i = calls.length - 1; i >= 0; i--) {
+      if (calls[i].id && calls[i].id === emit.tool_use_id) {
+        calls[i].output = emit.content;
+        calls[i].isError = !!emit.is_error;
+        calls[i].finishedAt = Date.now();
+        break;
+      }
+    }
+    t.toolCalls = calls;
+  } else if (kind === 'thinking') {
+    t.thinking = (t.thinking || []).concat([{ at: Date.now(), text: (emit.text || '').slice(0, 4096) }]).slice(-80);
+  } else if (kind === 'system' && emit.subtype === 'init' && emit.sessionId) {
+    t.sessionId = emit.sessionId;
+  } else if (kind === 'result') {
+    t.usage = emit.usage || null;
+    t.numTurns = emit.numTurns;
+    t.durationMs = emit.durationMs;
+    t.apiDurationMs = emit.apiDurationMs;
+    t.resultSummary = emit.summary || null;
+    t.resultError = emit.error || null;
+  }
+
   const changed = applyEvent(t, emit);
-  t.events = (t.events || []).concat([{ at: Date.now(), ...emit }]).slice(-200);
-  if (changed) console.log(`[event] ${ticketId} -> ${emit.type} ${emit.stage || ''} ${emit.groups?.[0] || ''}`.trim());
+  t.events = (t.events || []).concat([{ at: Date.now(), ...emit }]).slice(-300);
+  if (changed) console.log(`[event] ${ticketId} -> ${kind} ${emit.stage || ''} ${emit.groups?.[0] || ''}`.trim());
   upsertTicket(t);
 };
 
@@ -209,6 +244,16 @@ app.post('/api/tickets', async (req, res) => {
     analysisPath: null,
     stage2MergePath: null,
     events: [],
+    // Stream-json enrichment (filled at runtime).
+    sessionId: null,
+    toolCalls: [],
+    thinking: [],
+    usage: null,
+    numTurns: null,
+    durationMs: null,
+    apiDurationMs: null,
+    resultSummary: null,
+    resultError: null,
   };
   await upsertTicket(ticket);
   startWatcher(ticket);
@@ -229,6 +274,48 @@ app.post('/api/tickets/:id/cancel', async (req, res) => {
   await cancelPipeline(t.id);
   patchTicket(t.id, { status: 'cancelled', finishedAt: Date.now() });
   res.json(getTicket(t.id));
+});
+
+app.post('/api/tickets/:id/resume', async (req, res) => {
+  const t = getTicket(req.params.id);
+  if (!t) return res.status(404).json({ error: 'not_found' });
+  if (!t.sessionId) return res.status(400).json({ error: 'no_session', message: 'ticket has no resumable session — only tickets started after stream-json migration can be resumed' });
+  if (!t.worktreePath) return res.status(400).json({ error: 'no_worktree' });
+  if (t.status === 'running') return res.status(409).json({ error: 'already_running' });
+  const prompt = (req.body && typeof req.body.prompt === 'string' && req.body.prompt.trim())
+    ? req.body.prompt.trim()
+    : 'Continue from where we left off.';
+  // Reset running state but keep ticket meta + history.
+  const newPlanId = `plan-${Date.now()}-${randomUUID().slice(0, 6)}`;
+  const patch = {
+    planId: newPlanId,
+    status: 'running',
+    stage: null,
+    substage: null,
+    exitCode: null,
+    exitSignal: null,
+    failureReason: null,
+    hitlReason: null,
+    events: [],
+    startedAt: Date.now(),
+    lastActivityAt: Date.now(),
+  };
+  patchTicket(t.id, patch);
+  try {
+    const child = startPipeline({
+      ticket: { ...t, title: prompt, _resumePrompt: prompt },
+      planId: newPlanId,
+      worktreePath: t.worktreePath,
+      resumeSessionId: t.sessionId,
+      onEvent,
+      onExit,
+    });
+    patchTicket(t.id, { qwenPid: child.pid });
+    res.status(202).json(getTicket(t.id));
+  } catch (e) {
+    patchTicket(t.id, { status: 'failed', failureReason: `resume spawn: ${e.message || e}` });
+    res.status(500).json({ error: 'spawn_failed', message: String(e.message || e) });
+  }
 });
 
 app.post('/api/tickets/:id/hitl', async (req, res) => {
