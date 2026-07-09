@@ -92,6 +92,49 @@ $('#new-ticket-modal').addEventListener('click', (e) => {
   if (e.target.id === 'new-ticket-modal') $('#new-ticket-modal').classList.add('hidden');
 });
 
+// Populate the workdir datalist from the server-side directory scanner.
+// The dropdown lists git repos under PROJECTS_ROOT (default: parent of the board's
+// repo). The user can still type any custom path — the input is not restricted.
+async function loadProjects() {
+  const dl = document.getElementById('projects-list');
+  const hint = document.getElementById('workdir-hint');
+  if (!dl) return;
+  try {
+    const r = await fetch('/api/projects');
+    const data = await r.json();
+    dl.innerHTML = '';
+    for (const p of (data.projects || [])) {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.label = p.name;
+      dl.appendChild(opt);
+    }
+    if (hint) {
+      if (data.projects && data.projects.length) {
+        hint.textContent = `${data.projects.length} repo(s) under ${data.root}`;
+      } else if (data.error) {
+        hint.textContent = `scan root ${data.root}: ${data.error}`;
+      } else {
+        hint.textContent = `no git repos found under ${data.root} — type a path manually`;
+      }
+    }
+  } catch (e) {
+    if (hint) hint.textContent = `could not load projects: ${e.message || e}`;
+  }
+}
+loadProjects();
+
+// "Stay on current branch" disables the manual branch name input.
+const noNewBranchEl = document.getElementById('no-new-branch');
+const branchInputEl = document.querySelector('#new-ticket-form input[name="branch"]');
+function syncNoNewBranch() {
+  if (!noNewBranchEl || !branchInputEl) return;
+  branchInputEl.disabled = noNewBranchEl.checked;
+  if (noNewBranchEl.checked) branchInputEl.value = '';
+}
+noNewBranchEl && noNewBranchEl.addEventListener('change', syncNoNewBranch);
+syncNoNewBranch();
+
 $('#new-ticket-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -100,6 +143,7 @@ $('#new-ticket-form').addEventListener('submit', async (e) => {
     workdir: fd.get('workdir'),
     base: fd.get('base') || 'main',
     branch: fd.get('branch') || undefined,
+    noNewBranch: fd.get('noNewBranch') === 'on',
   };
   const r = await fetch('/api/tickets', {
     method: 'POST',
@@ -113,6 +157,7 @@ $('#new-ticket-form').addEventListener('submit', async (e) => {
   }
   $('#new-ticket-modal').classList.add('hidden');
   e.target.reset();
+  syncNoNewBranch();
   fetchBoard();
 });
 

@@ -46,9 +46,10 @@ echo '' | qwen -p "say hi" -y      # должен отработать и зав
 1. Нажмите **+ New ticket**
 2. Заполните:
    - **Title** — описание фичи, передаётся в `/devteam:build --feature`
-   - **Repo path (workdir)** — путь к git-репозиторию, с которым должен работать конвейер
+   - **Repo path (workdir)** — путь к git-репозиторию, с которым должен работать конвейер. Поле выпадающим списком предлагает поддиректории из `PROJECTS_ROOT` (по умолчанию — родительская директория самой доски), отфильтрованные по наличию `.git`; сам каталог доски из списка исключён. Можно ввести путь вручную.
    - **Base branch** — по умолчанию `main`
    - **Branch name** — необязательно, автогенерируется из заголовка
+   - **Stay on current branch** — если отмечено, новая ветка не создаётся: worktree создаётся в detached-режиме на `base` (полезно для разовых запусков, не требующих изоляции ветки)
 3. Доска создаёт worktree (например, `/Users/me/projects/api-devteam-board-add-oauth-login-t-abc12345`) и запускает внутри него процесс `qwen`
 4. Карточка появляется в колонке **Analytics** и перемещается по колонкам по мере поступления emit-строк
 5. Кликните по карточке, чтобы увидеть живые логи, таймлайн стадий и файлы `analysis.md` / `stage2.merge.md`
@@ -67,6 +68,7 @@ devteam-board/
 │   ├── worktree.js       # менеджер git worktree
 │   ├── pipeline.js       # запуск qwen, парсинг stdout
 │   ├── emit-parser.js    # паттерны STAGE N / TASK_COMPLETE / HITL_PAUSED
+│   ├── projects.js       # сканер git-репозиториев для dropdown workdir
 │   └── hitl.js           # мост чтения/записи pre-flight HITL
 └── public/
     ├── index.html        # канбан на 7 колонок
@@ -79,10 +81,11 @@ devteam-board/
 | Метод | Путь | Назначение |
 |---|---|---|
 | `GET` | `/api/health` | liveness + количество тикетов |
+| `GET` | `/api/projects` | список git-репозиториев под `PROJECTS_ROOT` для dropdown workdir |
 | `GET` | `/api/tickets` | список всех тикетов (опрашивается UI) |
 | `GET` | `/api/tickets/:id` | полная информация о тикете |
 | `GET` | `/api/tickets/:id/logs?since=N` | инкрементальный буфер логов |
-| `POST` | `/api/tickets` | `{title, workdir, base?, branch?}` → создаёт worktree + запускает qwen |
+| `POST` | `/api/tickets` | `{title, workdir, base?, branch?, noNewBranch?}` → создаёт worktree + запускает qwen. `noNewBranch: true` создаёт detached worktree на `base` без новой ветки |
 | `POST` | `/api/tickets/:id/cancel` | SIGTERM, worktree сохраняется |
 | `POST` | `/api/tickets/:id/hitl` | `{decision: "approve"\|"reject", comment?}` |
 | `DELETE` | `/api/tickets/:id` | SIGTERM + удаление worktree |
@@ -93,6 +96,7 @@ devteam-board/
 |---|---|---|
 | `PORT` | `3000` | HTTP-порт |
 | `BOARD_FILE` | `./board.json` | файл состояния lowdb |
+| `PROJECTS_ROOT` | `<родитель репозитория доски>` | корневая директория, из которой `/api/projects` собирает поддиректории для выпадающего списка workdir. Сам каталог доски из списка исключён; в списке остаются только директории, содержащие `.git` |
 
 ## Как потребляется контракт devteam
 

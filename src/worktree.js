@@ -7,16 +7,18 @@ function slugify(branch) {
   return branch.replace(/[^a-z0-9-]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
-export function worktreePathFor(repoPath, branch) {
+export function worktreePathFor(repoPath, branch, suffix = null) {
   const slug = slugify(branch);
-  return `${repoPath.replace(/\/+$/, '')}-${slug}`;
+  const fullSlug = suffix ? `${slug}-${suffix}` : slug;
+  return `${repoPath.replace(/\/+$/, '')}-${fullSlug}`;
 }
 
-export async function createWorktree({ repoPath, branch, base = 'main' }) {
-  const wtPath = worktreePathFor(repoPath, branch);
-  await pExecFile('git', ['-C', repoPath, 'worktree', 'add', '-b', branch, wtPath, base], {
-    maxBuffer: 10 * 1024 * 1024,
-  });
+export async function createWorktree({ repoPath, branch, base = 'main', noNewBranch = false, pathSuffix = null }) {
+  const wtPath = worktreePathFor(repoPath, branch, pathSuffix);
+  const args = noNewBranch
+    ? ['-C', repoPath, 'worktree', 'add', '--detach', wtPath, base]
+    : ['-C', repoPath, 'worktree', 'add', '-b', branch, wtPath, base];
+  await pExecFile('git', args, { maxBuffer: 10 * 1024 * 1024 });
   return wtPath;
 }
 

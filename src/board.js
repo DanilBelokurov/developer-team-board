@@ -22,6 +22,7 @@ import { initDb, getDb, getTicket, upsertTicket, patchTicket, deleteTicket, list
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startPipeline, getLogs, cancelPipeline } from './pipeline.js';
 import { writeHitlResponse } from './hitl.js';
+import { listProjects, getProjectsRoot } from './projects.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
@@ -142,6 +143,10 @@ app.use(express.static(PUBLIC_DIR));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, tickets: listTickets().length }));
 
+app.get('/api/projects', async (_req, res) => {
+  res.json(await listProjects());
+});
+
 app.get('/api/tickets', (_req, res) => res.json(listTickets()));
 
 app.get('/api/tickets/:id', (req, res) => {
@@ -159,13 +164,24 @@ app.get('/api/tickets/:id/logs', (req, res) => {
 });
 
 app.post('/api/tickets', async (req, res) => {
-  const { title, workdir, base = 'main', branch } = req.body || {};
+  const { title, workdir, base = 'main', branch, noNewBranch = false } = req.body || {};
   if (!title || !workdir) return res.status(400).json({ error: 'title and workdir are required' });
   const id = `T-${randomUUID().slice(0, 8)}`;
-  const branchName = branch || `devteam-board/${slugify(title)}-${id.toLowerCase()}`;
+  // When `noNewBranch` is true we create a detached worktree at `base` instead
+  // of a fresh branch. We still need a unique worktree path per ticket, so the
+  // ticket id is appended as a path suffix (the branch label is just `base`).
+  const branchName = noNewBranch
+    ? base
+    : (branch || `devteam-board/${slugify(title)}-${id.toLowerCase()}`);
   let worktreePath;
   try {
-    worktreePath = await createWorktree({ repoPath: workdir, branch: branchName, base });
+    worktreePath = await createWorktree({
+      repoPath: workdir,
+      branch: branchName,
+      base,
+      noNewBranch,
+      pathSuffix: noNewBranch ? id.toLowerCase() : null,
+    });
   } catch (e) {
     return res.status(400).json({ error: 'worktree_create_failed', message: String(e.message || e) });
   }
@@ -177,6 +193,7 @@ app.post('/api/tickets', async (req, res) => {
     worktreePath,
     branch: branchName,
     base,
+    noNewBranch,
     planId,
     status: 'backlog',
     stage: null,

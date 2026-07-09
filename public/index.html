@@ -54,8 +54,17 @@
       <h2>New ticket</h2>
       <form id="new-ticket-form">
         <label>Title <input name="title" required placeholder="Add OAuth login" /></label>
-        <label>Repo path (workdir) <input name="workdir" required placeholder="/Users/me/projects/api" /></label>
+        <label>
+          Repo path (workdir)
+          <input name="workdir" required list="projects-list" placeholder="/Users/me/projects/api" autocomplete="off" />
+          <datalist id="projects-list"></datalist>
+          <span class="hint" id="workdir-hint"></span>
+        </label>
         <label>Base branch <input name="base" value="main" /></label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="noNewBranch" id="no-new-branch" />
+          <span>Stay on current branch — create a detached worktree at <code>base</code> instead of a new branch</span>
+        </label>
         <label>Branch name (optional) <input name="branch" placeholder="auto from title if blank" /></label>
         <div class="row">
           <button type="button" id="new-ticket-cancel">Cancel</button>
