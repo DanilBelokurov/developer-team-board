@@ -32,7 +32,7 @@ import { initDb, getDb, getTicket, upsertTicket, patchTicket, deleteTicket, list
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startPipeline, getLogs, cancelPipeline } from './pipeline.js';
 import { writeHitlResponse } from './hitl.js';
-import { listProjects, getProjectsRoot } from './projects.js';
+import { listProjects, getProjectsRoot, listBranches } from './projects.js';
 import { createStateWatcher, discoverPlanDirs } from './state-watcher.js';
 import { stateToBoardState, parseStateMd } from './state-parser.js';
 import { exportVocab, isTerminal, STAGE_IDS, lookup as vocabLookup, PIPELINE_STATUS, STAGE_STATUS, HITL_ACTION } from './state-vocab.js';
@@ -396,6 +396,15 @@ app.get('/api/vocab', (_req, res) => res.json(exportVocab()));
 
 app.get('/api/projects', async (_req, res) => {
   res.json(await listProjects());
+});
+
+// List local branches for a given repo path. Path is taken as a
+// query string because it can contain slashes and absolute roots.
+app.get('/api/branches', async (req, res) => {
+  const repoPath = String(req.query.path || '').trim();
+  if (!repoPath) return res.status(400).json({ error: 'path required' });
+  const branches = await listBranches(repoPath);
+  res.json({ path: repoPath, branches });
 });
 
 app.get('/api/tickets', (_req, res) => res.json(listTickets()));
