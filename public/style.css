@@ -171,6 +171,22 @@ code.path { color: var(--muted); font-size: 11px; word-break: break-all; }
   letter-spacing: 0;
 }
 #new-ticket-form input:disabled { opacity: 0.4; cursor: not-allowed; }
+#new-ticket-form select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  appearance: auto;
+}
+#new-ticket-form select:focus { outline: none; border-color: var(--accent); }
+#new-ticket-form select option { background: var(--bg); color: var(--text); }
+#new-ticket-form select option:disabled { color: var(--muted); }
 #new-ticket-form .checkbox-row {
   flex-direction: row;
   align-items: flex-start;

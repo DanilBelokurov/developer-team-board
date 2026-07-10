@@ -291,66 +291,68 @@ noNewBranchEl && noNewBranchEl.addEventListener('change', syncNoNewBranch);
 syncNoNewBranch();
 
 // --- Workdir → base branch dropdown --------------------------------------
-// The base branch input is disabled until a workdir is typed. On any
-// workdir change, we fetch the local branches and populate a <datalist>
-// that the input is bound to. The input stays free-text (the user can
-// type a branch that doesn't exist locally, e.g. to create from a tag
-// or a remote-tracking ref), but the suggestions cover the common case.
+// The base branch is a native <select>, always enabled — it has at
+// least a "select a workdir first" placeholder. Once a workdir is
+// typed, /api/branches populates the list with that repo's local
+// branches. The default selection is "main" if present, else the
+// first branch. For branches that don't exist locally (tags, remote
+// refs), the user can type the name in the separate "Branch name"
+// field — that's the feature-branch name, not the base.
 
 const workdirInputEl = document.querySelector('#new-ticket-form input[name="workdir"]');
-const baseInputEl = document.querySelector('#new-ticket-form input[name="base"]');
-const baseBranchesEl = document.getElementById('base-branches');
+const baseSelectEl = document.getElementById('base-branches');
 const baseHintEl = document.getElementById('base-hint');
 
 let workdirDebounce = null;
 let workdirLastFetched = null;
 let workdirAbortCtl = null;
 
-function setBaseEnabled(enabled, hint) {
-  if (!baseInputEl) return;
-  baseInputEl.disabled = !enabled;
-  if (hint != null && baseHintEl) baseHintEl.textContent = hint;
+function renderBasePlaceholder(hint) {
+  if (!baseSelectEl) return;
+  baseSelectEl.innerHTML = '<option value="" disabled selected>select a workdir first</option>';
+  if (baseHintEl) baseHintEl.textContent = hint || '—';
+}
+
+function renderBaseBranches(branches, prevSelection) {
+  if (!baseSelectEl) return;
+  if (!branches || branches.length === 0) {
+    renderBasePlaceholder('no local branches — type one in Branch name below');
+    return;
+  }
+  const opts = branches.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+  baseSelectEl.innerHTML = opts;
+  // Re-select: prefer the previous selection if it's still in the list;
+  // otherwise default to "main" if present, else the first branch.
+  let chosen = null;
+  if (prevSelection && branches.includes(prevSelection)) chosen = prevSelection;
+  if (!chosen && branches.includes('main')) chosen = 'main';
+  if (!chosen) chosen = branches[0];
+  baseSelectEl.value = chosen;
+  if (baseHintEl) baseHintEl.textContent = `${branches.length} local branch${branches.length === 1 ? '' : 'es'}`;
 }
 
 async function refreshBranchesFor(workdir) {
   const path = (workdir || '').trim();
+  const prevSelection = baseSelectEl ? baseSelectEl.value : null;
   if (!path) {
-    setBaseEnabled(false, 'select a repo path first');
-    if (baseBranchesEl) baseBranchesEl.innerHTML = '';
+    renderBasePlaceholder('select a repo path first');
     return;
   }
-  // Cancel any in-flight request for an older path.
   if (workdirAbortCtl) workdirAbortCtl.abort();
   workdirAbortCtl = new AbortController();
   workdirLastFetched = path;
-  setBaseEnabled(false, 'loading branches…');
+  if (baseHintEl) baseHintEl.textContent = 'loading branches…';
   try {
     const r = await fetch(`/api/branches?path=${encodeURIComponent(path)}`, {
       signal: workdirAbortCtl.signal,
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    // Stale-response guard: another fetch may have started for a newer
-    // path while we were waiting.
-    if (workdirLastFetched !== path) return;
-    if (baseBranchesEl) {
-      baseBranchesEl.innerHTML = (data.branches || [])
-        .map((b) => `<option value="${esc(b)}"></option>`)
-        .join('');
-    }
-    if (!data.branches || data.branches.length === 0) {
-      setBaseEnabled(true, 'no local branches — type one manually');
-    } else {
-      setBaseEnabled(true, `${data.branches.length} local branch${data.branches.length === 1 ? '' : 'es'} · free-text allowed`);
-      // If the current value doesn't match any branch, leave it (free
-      // text). If it's empty or the default 'main', seed it.
-      if (!baseInputEl.value) {
-        baseInputEl.value = data.branches.includes('main') ? 'main' : data.branches[0];
-      }
-    }
+    if (workdirLastFetched !== path) return; // stale
+    renderBaseBranches(data.branches || [], prevSelection);
   } catch (e) {
     if (e.name === 'AbortError') return;
-    setBaseEnabled(true, 'could not list branches (not a git repo?) · type one manually');
+    renderBasePlaceholder('could not list branches (not a git repo?)');
   }
 }
 
@@ -365,10 +367,15 @@ if (workdirInputEl) {
 $('#new-ticket-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const baseVal = fd.get('base');
+  if (!baseVal) {
+    alert('Pick a base branch first.');
+    return;
+  }
   const body = {
     title: fd.get('title'),
     workdir: fd.get('workdir'),
-    base: fd.get('base') || 'main',
+    base: baseVal,
     branch: fd.get('branch') || undefined,
     noNewBranch: fd.get('noNewBranch') === 'on',
   };
@@ -385,10 +392,7 @@ $('#new-ticket-form').addEventListener('submit', async (e) => {
   $('#new-ticket-modal').classList.add('hidden');
   e.target.reset();
   syncNoNewBranch();
-  // Reset base-branch state for the next ticket.
-  if (baseBranchesEl) baseBranchesEl.innerHTML = '';
-  setBaseEnabled(false, 'select a repo path first');
-  if (baseInputEl) baseInputEl.value = 'main';
+  renderBasePlaceholder('select a repo path first');
   fetchBoard();
 });
 
