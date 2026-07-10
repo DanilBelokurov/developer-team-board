@@ -424,7 +424,7 @@ app.get('/api/tickets/:id/logs', (req, res) => {
 });
 
 app.post('/api/tickets', async (req, res) => {
-  const { title, workdir, base = 'main', branch, noNewBranch = false } = req.body || {};
+  const { title, workdir, base = 'main', branch, noNewBranch = false, mode, stages } = req.body || {};
   if (!title || !workdir) return res.status(400).json({ error: 'title and workdir are required' });
   const id = `T-${randomUUID().slice(0, 8)}`;
   // When `noNewBranch` is true we create a detached worktree at `base` instead
@@ -446,6 +446,15 @@ app.post('/api/tickets', async (req, res) => {
     return res.status(400).json({ error: 'worktree_create_failed', message: String(e.message || e) });
   }
   const planId = `plan-${Date.now()}-${randomUUID().slice(0, 6)}`;
+  // Normalise mode + stages. mode defaults to 'devteam' for backwards
+  // compat with tickets created before the toggle existed. stages is
+  // the list of stages to RUN; buildPrompt translates to --skip-stage.
+  const normMode = mode === 'simple' ? 'simple' : 'devteam';
+  const normStages = normMode === 'devteam'
+    ? (Array.isArray(stages) && stages.length > 0
+        ? stages.filter((s) => ['analytics', 'development', 'testing', 'admin'].includes(s))
+        : ['analytics', 'development', 'testing', 'admin'])
+    : null;
   const ticket = {
     id,
     title,
@@ -454,6 +463,8 @@ app.post('/api/tickets', async (req, res) => {
     branch: branchName,
     base,
     noNewBranch,
+    mode: normMode,
+    stages: normStages,
     planId,
     planIdBoundAt: null,  // set when state.md binds a real devTeam planId
     status: 'backlog',

@@ -145,9 +145,41 @@ export function cancelPipeline(ticketId) {
   });
 }
 
-function buildPrompt(ticket) {
-  // /devteam:build with positional feature; --no-push keeps everything local
-  // (board does not auto-push; that's an admin-stage decision the user can make later)
+// Canonical list of devTeam pipeline stages. Kept in sync with
+// pipeline-orchestrator.md § "Four stages".
+const ALL_STAGES = ['analytics', 'development', 'testing', 'admin'];
+
+/**
+ * Build the prompt string that the board hands to `qwen -p`. Two modes:
+ *
+ *   - 'simple': the title is sent raw, with no command wrapping. Use
+ *     this for ad-hoc prompts (e.g. "/review" the recent commit, ask a
+ *     quick question, run a custom command).
+ *
+ *   - 'devteam' (default): wraps the title in `/devteam:build --feature
+ *     "X" --base Y --no-push` and appends `--skip-stage` for each
+ *     unchecked stage. `--no-push` is always set — the board never
+ *     auto-pushes; that's a human step (the user can run
+ *     /devteam:admin afterwards to push the branch).
+ */
+export function buildPrompt(ticket) {
   const title = String(ticket.title || ticket._resumePrompt || '').replace(/"/g, '\\"');
-  return `/devteam:build --feature "${title}" --base ${ticket.base || 'main'} --no-push`;
+
+  if (ticket.mode === 'simple') {
+    return title;
+  }
+
+  let prompt = `/devteam:build --feature "${title}" --base ${ticket.base || 'main'} --no-push`;
+
+  if (Array.isArray(ticket.stages) && ticket.stages.length > 0) {
+    const runStages = new Set(ticket.stages.filter((s) => ALL_STAGES.includes(s)));
+    const skipStages = ALL_STAGES.filter((s) => !runStages.has(s));
+    // Only emit --skip-stage when the user actually deselected something
+    // — emitting it with all four stages skipped would be a silent no-op
+    // and would confuse the orchestrator.
+    if (skipStages.length > 0 && skipStages.length < ALL_STAGES.length) {
+      prompt += ` --skip-stage ${skipStages.join(',')}`;
+    }
+  }
+  return prompt;
 }

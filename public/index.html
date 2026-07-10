@@ -57,7 +57,39 @@
     <div class="modal-body">
       <h2>New ticket</h2>
       <form id="new-ticket-form">
-        <label>Title <input name="title" required placeholder="Add OAuth login" /></label>
+        <label>Title <input name="title" required placeholder="Add OAuth login or just a free-form prompt" /></label>
+
+        <div class="mode-section">
+          <div class="mode-label">Mode</div>
+          <div class="mode-options">
+            <label class="mode-option">
+              <input type="radio" name="mode" value="devteam" checked />
+              <span>
+                <b>Pipeline</b> <span class="muted">(/devteam:build)</span>
+                <div class="muted mode-desc">runs the devteam orchestrator with selected stages</div>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="mode" value="simple" />
+              <span>
+                <b>Simple</b> <span class="muted">(raw prompt)</span>
+                <div class="muted mode-desc">send the title straight to qwen with no command wrapping</div>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="stages-section" id="stages-section">
+          <div class="stages-label">Run stages</div>
+          <div class="stages-checks" id="stages-checks">
+            <label class="stage-check"><input type="checkbox" name="stage" value="analytics" checked /> <span>Analytics</span></label>
+            <label class="stage-check"><input type="checkbox" name="stage" value="development" checked /> <span>Development</span></label>
+            <label class="stage-check"><input type="checkbox" name="stage" value="testing" checked /> <span>Testing</span></label>
+            <label class="stage-check"><input type="checkbox" name="stage" value="admin" checked /> <span>Admin</span></label>
+          </div>
+          <span class="hint" id="stages-hint">uncheck to <code>--skip-stage</code> — selected stages run in order</span>
+        </div>
+
         <label>
           Repo path (workdir)
           <input name="workdir" required list="projects-list" placeholder="/Users/me/projects/api" autocomplete="off" />

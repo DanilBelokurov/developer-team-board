@@ -294,6 +294,23 @@ function syncNoNewBranch() {
 noNewBranchEl && noNewBranchEl.addEventListener('change', syncNoNewBranch);
 syncNoNewBranch();
 
+// --- Mode + stages toggle ------------------------------------------------
+// The new-ticket form has a Mode radio (devteam | simple) and four
+// stage checkboxes. In simple mode the stages section is hidden — the
+// prompt goes straight to qwen with no /devteam:build wrapping.
+
+function syncModeSections() {
+  const mode = document.querySelector('input[name="mode"]:checked');
+  const stagesSection = document.getElementById('stages-section');
+  if (!mode || !stagesSection) return;
+  stagesSection.classList.toggle('hidden', mode.value !== 'devteam');
+}
+
+document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+  radio.addEventListener('change', syncModeSections);
+});
+syncModeSections();
+
 // --- Workdir → base branch dropdown --------------------------------------
 // The base branch is a native <select>, always enabled — it has at
 // least a "select a workdir first" placeholder. Once a workdir is
@@ -371,17 +388,23 @@ if (workdirInputEl) {
 $('#new-ticket-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const mode = fd.get('mode') || 'devteam';
   const baseVal = fd.get('base');
-  if (!baseVal) {
+  if (mode === 'devteam' && !baseVal) {
     alert('Pick a base branch first.');
     return;
   }
+  // In devteam mode, gather the selected stage checkboxes; in simple
+  // mode, stages are null (the buildPrompt will ignore them).
+  const stages = mode === 'devteam' ? fd.getAll('stage') : null;
   const body = {
     title: fd.get('title'),
     workdir: fd.get('workdir'),
-    base: baseVal,
+    base: baseVal || 'main',
     branch: fd.get('branch') || undefined,
     noNewBranch: fd.get('noNewBranch') === 'on',
+    mode,
+    stages,
   };
   const r = await fetch('/api/tickets', {
     method: 'POST',
@@ -396,6 +419,7 @@ $('#new-ticket-form').addEventListener('submit', async (e) => {
   $('#new-ticket-modal').classList.add('hidden');
   e.target.reset();
   syncNoNewBranch();
+  syncModeSections();
   renderBasePlaceholder('select a repo path first');
   fetchBoard();
 });
