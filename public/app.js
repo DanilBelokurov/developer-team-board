@@ -35,6 +35,10 @@ const state = {
   logTimer: null,
   activeTab: 'log',
   vocab: null,  // populated by fetchVocab() on boot
+  logFilter: 'all',  // current filter on the Log tab
+  logAutoScroll: true,
+  // Cached raw entries for the current ticket (for Copy / Download).
+  logEntries: [],
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -474,6 +478,9 @@ $('#resume-form').addEventListener('submit', async (e) => {
   $('#resume-modal').classList.add('hidden');
   state.currentDetail = await r.json();
   state.logOffset = 0;
+  state.logEntries = [];
+  const logEl = $('#logs');
+  if (logEl) logEl.innerHTML = '';
   renderMeta();
   renderTabs();
   renderMetrics();
@@ -487,6 +494,10 @@ async function openDetail(id) {
   const t = await r.json();
   state.currentDetail = t;
   state.logOffset = 0;
+  state.logEntries = [];
+  // Reset the log DOM container (we no longer use a <pre>).
+  const logEl = $('#logs');
+  if (logEl) logEl.innerHTML = '';
   $('#detail-title').textContent = t.title;
   $('#detail-modal').classList.remove('hidden');
   renderMeta();
@@ -708,20 +719,248 @@ function renderTabs() {
   }
 }
 
+// --- Log rendering --------------------------------------------------------
+
+const LOG_ICON = {
+  stage_started:    '▶',
+  stage_completed:  '✓',
+  substage:         '↪',
+  hitl_paused:      '⏸',
+  task_complete:    '✓',
+  result:           '📊',
+  system:           '⚙',
+  exit:             '■',
+  thinking:         '✎',
+  text:             '💬',
+  tool_call:        '◆',
+  tool_result:      '◀',
+  log:              '·',
+};
+
+const LOG_CATEGORY = {
+  stage_started:    'stage',
+  stage_completed:  'stage',
+  substage:         'stage',
+  hitl_paused:      'stage',
+  task_complete:    'stage',
+  result:           'stage',
+  system:           'stage',
+  exit:             'stage',
+  thinking:         'thinking',
+  text:             'text',
+  tool_call:        'tool',
+  tool_result:      'tool',
+  log:              'log',
+};
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  // HH:MM:SS.mmm — local time, easier to correlate with the user's wall clock.
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function renderLogEntry(e) {
+  const ts = fmtTs(e.ts);
+  const icon = LOG_ICON[e.kind] || '·';
+  const cat = LOG_CATEGORY[e.kind] || 'log';
+  const errClass = (e.is_error || e.kind === 'exit' && e.code !== 0 || e.source === 'stderr') ? ' log-err' : '';
+  const header = `<span class="log-ts">${ts}</span><span class="log-icon" aria-hidden="true">${icon}</span><span class="log-body">`;
+  let body = '';
+  switch (e.kind) {
+    case 'tool_call': {
+      const inputStr = e.input ? JSON.stringify(e.input, null, 2) : '{}';
+      const stageBadge = e.stage ? `<span class="stage-badge stage-${esc(e.stage.id || e.stage)}">${esc(e.stage.label || e.stage)}</span>` : '';
+      body = `<b>${esc(e.name || 'tool')}</b> ${stageBadge}` +
+        `<details class="log-details"><summary>input</summary><pre>${esc(inputStr)}</pre></details>`;
+      break;
+    }
+    case 'tool_result': {
+      const content = e.content == null ? '' : String(e.content);
+      const preview = content.length > 240 ? content.slice(0, 240) + '…' : content;
+      body = `${e.is_error ? '<span class="err">error</span> · ' : ''}<span class="muted">${esc(preview)}</span>` +
+        (content.length > 240 ? `<details class="log-details"><summary>full output (${content.length} chars)</summary><pre>${esc(content)}</pre></details>` : '');
+      break;
+    }
+    case 'thinking': {
+      const text = e.text || '';
+      body = `<span class="muted"><i>${esc(text)}</i></span>`;
+      break;
+    }
+    case 'text': {
+      const text = e.text || '';
+      body = esc(text);
+      break;
+    }
+    case 'stage_started': {
+      body = `stage <b>${esc(e.stage || '?')}</b> started`;
+      break;
+    }
+    case 'stage_completed': {
+      const ok = e.ok !== false;
+      body = `stage <b>${esc(e.stage || '?')}</b> ${ok ? 'completed' : '<span class="err">failed</span>'}`;
+      break;
+    }
+    case 'substage': {
+      body = `<span class="muted">${esc((e.groups || []).join(' › ') || '—')}</span>`;
+      break;
+    }
+    case 'hitl_paused': {
+      body = `HITL paused${e.groups && e.groups[0] ? ': <b>' + esc(e.groups[0]) + '</b>' : ''}`;
+      break;
+    }
+    case 'task_complete': {
+      body = `task complete`;
+      break;
+    }
+    case 'result': {
+      const dur = typeof e.durationMs === 'number' ? (e.durationMs / 1000).toFixed(1) + 's' : '?s';
+      const turns = e.numTurns ?? '?';
+      const ok = e.ok !== false;
+      body = `result: ${ok ? 'ok' : '<span class="err">error</span>'} · ${turns} turns · ${dur}` +
+        (e.summary ? `<details class="log-details"><summary>summary</summary><pre>${esc(e.summary)}</pre></details>` : '');
+      break;
+    }
+    case 'system': {
+      const sid = e.sessionId ? ' · session ' + esc(e.sessionId.slice(0, 8)) : '';
+      body = `<span class="muted">${esc(e.subtype || 'system')}${sid}</span>`;
+      break;
+    }
+    case 'exit': {
+      const ok = e.code === 0;
+      body = `exit code=${e.code}${e.signal ? ' signal=' + esc(e.signal) : ''}`;
+      // The "ok" suffix flips the entry to log-err via errClass.
+      void ok;
+      break;
+    }
+    case 'log':
+    default: {
+      const text = e.text || '';
+      body = esc(text);
+      break;
+    }
+  }
+  return `<div class="log-line log-kind-${e.kind} log-cat-${cat}${errClass}" data-kind="${e.kind}" data-cat="${cat}">${header}${body}</span></div>`;
+}
+
+function entryToText(e) {
+  // Plain-text fallback for Copy / Download.
+  const ts = fmtTs(e.ts);
+  const icon = LOG_ICON[e.kind] || '·';
+  let body = '';
+  switch (e.kind) {
+    case 'tool_call': body = `${e.name || 'tool'} ${JSON.stringify(e.input || {})}`;
+      break;
+    case 'tool_result': body = e.is_error ? `error: ${e.content || ''}` : String(e.content || '');
+      break;
+    case 'thinking': body = e.text || '';
+      break;
+    case 'text': body = e.text || '';
+      break;
+    case 'stage_started': body = `stage ${e.stage} started`;
+      break;
+    case 'stage_completed': body = `stage ${e.stage} ${e.ok !== false ? 'completed' : 'failed'}`;
+      break;
+    case 'substage': body = (e.groups || []).join(' › ');
+      break;
+    case 'hitl_paused': body = `HITL paused${e.groups && e.groups[0] ? ': ' + e.groups[0] : ''}`;
+      break;
+    case 'task_complete': body = 'task complete';
+      break;
+    case 'result': body = `result: ${e.ok !== false ? 'ok' : 'error'} · ${e.numTurns ?? '?'} turns · ${(e.durationMs || 0) / 1000}s`;
+      break;
+    case 'system': body = `system: ${e.subtype || ''}${e.sessionId ? ' session=' + e.sessionId : ''}`;
+      break;
+    case 'exit': body = `exit code=${e.code}${e.signal ? ' signal=' + e.signal : ''}`;
+      break;
+    default: body = e.text || JSON.stringify(e);
+  }
+  return `${ts} ${icon} ${body}`;
+}
+
+function applyLogFilter() {
+  const cat = state.logFilter;
+  const lines = document.querySelectorAll('#logs .log-line');
+  let visible = 0;
+  for (const el of lines) {
+    const lineCat = el.dataset.cat;
+    const isErr = el.classList.contains('log-err');
+    let show = false;
+    if (cat === 'all') show = true;
+    else if (cat === 'err') show = isErr;
+    else show = lineCat === cat;
+    el.style.display = show ? '' : 'none';
+    if (show) visible++;
+  }
+  $('#logs-status').textContent = `${visible}/${lines.length}`;
+}
+
 async function pollLogs() {
   if (!state.currentDetail) return;
   const id = state.currentDetail.id;
   const r = await fetch(`/api/tickets/${id}/logs?since=${state.logOffset}`);
   if (!r.ok) return;
-  const { lines, total } = await r.json();
-  if (lines.length) {
-    const pre = $('#logs');
-    pre.textContent += lines.join('\n') + '\n';
-    pre.scrollTop = pre.scrollHeight;
+  const { entries, total } = await r.json();
+  if (entries && entries.length) {
+    state.logEntries = state.logEntries.concat(entries);
+    const logEl = $('#logs');
+    const frag = document.createDocumentFragment();
+    const tmp = document.createElement('div');
+    tmp.innerHTML = entries.map(renderLogEntry).join('');
+    while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+    logEl.appendChild(frag);
+    applyLogFilter();
+    if (state.logAutoScroll) logEl.scrollTop = logEl.scrollHeight;
   }
   state.logOffset = total;
-  $('#logs-status').textContent = `(${total} lines)`;
+  if (!entries || !entries.length) {
+    $('#logs-status').textContent = `${total} total`;
+  }
 }
+
+// --- Log toolbar wiring --------------------------------------------------
+
+document.querySelectorAll('#log-filters .filter-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.logFilter = btn.dataset.filter;
+    document.querySelectorAll('#log-filters .filter-btn').forEach((b) => {
+      b.classList.toggle('active', b === btn);
+    });
+    applyLogFilter();
+  });
+});
+
+const autoScrollEl = document.getElementById('log-auto-scroll');
+if (autoScrollEl) autoScrollEl.addEventListener('change', () => {
+  state.logAutoScroll = autoScrollEl.checked;
+});
+
+const btnCopyLogs = document.getElementById('btn-copy-logs');
+if (btnCopyLogs) btnCopyLogs.addEventListener('click', async () => {
+  const text = state.logEntries.map(entryToText).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    btnCopyLogs.textContent = 'Copied ✓';
+    setTimeout(() => { btnCopyLogs.textContent = 'Copy'; }, 1500);
+  } catch (e) {
+    alert('Copy failed: ' + (e.message || e));
+  }
+});
+
+const btnDownloadLogs = document.getElementById('btn-download-logs');
+if (btnDownloadLogs) btnDownloadLogs.addEventListener('click', () => {
+  const text = state.logEntries.map(entryToText).join('\n');
+  const id = state.currentDetail ? state.currentDetail.id : 'ticket';
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${id}.log`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+});
 
 // --- Boot -----------------------------------------------------------------
 

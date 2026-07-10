@@ -243,6 +243,130 @@ code.path { color: var(--muted); font-size: 11px; word-break: break-all; }
   word-break: break-all;
   margin: 0;
 }
+.log-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 88px 18px 1fr;
+  gap: 6px;
+  align-items: start;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.log-line:hover { background: rgba(255, 255, 255, 0.03); }
+.log-line .log-ts {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  user-select: none;
+}
+.log-line .log-icon {
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+  user-select: none;
+}
+.log-line .log-body {
+  min-width: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.log-line .log-details {
+  margin-top: 2px;
+  margin-left: 0;
+}
+.log-line .log-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 10.5px;
+  padding: 1px 0;
+  user-select: none;
+}
+.log-line .log-details pre {
+  background: #050709;
+  padding: 4px 6px;
+  border-radius: 3px;
+  margin: 2px 0 0 0;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Category colors — subtle, by category (not per-kind) so the eye can
+ * scan a single color family at a time. */
+.log-cat-stage    .log-icon { color: #c084fc; }
+.log-cat-tool     .log-icon { color: #5b9dff; }
+.log-cat-thinking .log-icon { color: #facc15; }
+.log-cat-text     .log-icon { color: var(--ok); }
+.log-cat-log      .log-icon { color: var(--muted); }
+
+.log-kind-stage_started  { border-left: 2px solid #c084fc; padding-left: 6px; }
+.log-kind-stage_completed { border-left: 2px solid var(--ok); padding-left: 6px; }
+.log-kind-hitl_paused    { border-left: 2px solid var(--warn); padding-left: 6px; background: rgba(250, 204, 21, 0.05); }
+.log-kind-task_complete  { border-left: 2px solid var(--ok); padding-left: 6px; }
+.log-kind-exit           { border-left: 2px solid var(--muted); padding-left: 6px; }
+.log-err                { color: var(--err); }
+.log-err .log-icon      { color: var(--err); }
+
+/* Toolbar (filters + actions) */
+.log-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.log-filters {
+  display: flex;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+.filter-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.filter-btn:hover { color: var(--text); }
+.filter-btn.active {
+  background: var(--accent);
+  color: #0b1220;
+  font-weight: 600;
+}
+.log-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10.5px;
+}
+.log-actions button {
+  font-size: 10.5px;
+  padding: 3px 8px;
+}
+.auto-scroll-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.auto-scroll-toggle input { margin: 0; cursor: pointer; }
 section h3 { margin: 0 0 6px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
 
 /* --- Tabs (Log / Reasoning / Tools / Events) ----------------------------- */

@@ -102,8 +102,26 @@
           </nav>
           <div id="detail-state" class="state-panel"></div>
           <div class="tab-panel" data-tab="log">
-            <div class="tab-status"><span id="logs-status" class="muted"></span></div>
-            <pre id="logs"></pre>
+            <div class="log-toolbar">
+              <div class="log-filters" id="log-filters">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="stage">Stages</button>
+                <button class="filter-btn" data-filter="tool">Tools</button>
+                <button class="filter-btn" data-filter="thinking">Thinking</button>
+                <button class="filter-btn" data-filter="text">Assistant</button>
+                <button class="filter-btn" data-filter="err">Errors</button>
+              </div>
+              <div class="log-actions">
+                <span id="logs-status" class="muted"></span>
+                <button id="btn-copy-logs" title="Copy log to clipboard">Copy</button>
+                <button id="btn-download-logs" title="Download log as .log file">Download</button>
+                <label class="auto-scroll-toggle">
+                  <input type="checkbox" id="log-auto-scroll" checked />
+                  <span>auto-scroll</span>
+                </label>
+              </div>
+            </div>
+            <div id="logs" class="log-stream"></div>
           </div>
           <div class="tab-panel hidden" data-tab="reasoning">
             <ol id="reasoning" class="thinking-list"></ol>

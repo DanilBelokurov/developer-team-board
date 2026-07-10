@@ -12,7 +12,10 @@
 //   - hitl_paused      { groups: [<reason>] }
 //
 // Additional UI-only kinds (pushed into ticket.events[] / dedicated arrays):
-//   - log              { text, source: 'assistant'|'user'|'stderr'|'stdout' }
+//   - text             { text, source: 'assistant'|'user' }   — model prose
+//   - log              { text, source: 'stdout'|'stderr' }    — raw line that
+//                                                            didn't fit a typed
+//                                                            event
 //   - thinking         { text }
 //   - tool_call        { id, name, input, stage }
 //   - tool_result      { tool_use_id, content, is_error }
@@ -69,8 +72,12 @@ function parseAssistant(obj) {
       }
     } else if (block.type === 'text') {
       const text = block.text || '';
-      events.push({ kind: 'log', text, source: 'assistant' });
-      // Legacy text markers emitted by devteam pipeline orchestrators.
+      // Assistant prose. We classify it as `text` (not `log`) so the UI
+      // can render it with a different style (the actual model output is
+      // what the user wants to read). Legacy markers embedded in the
+      // text by devteam orchestrators (TASK_COMPLETE, HITL_PAUSED) are
+      // promoted to their own typed events alongside the prose.
+      events.push({ kind: 'text', text, source: 'assistant' });
       if (/\bTASK_COMPLETE\b/.test(text)) {
         events.push({ kind: 'task_complete' });
       }
