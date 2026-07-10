@@ -38,6 +38,10 @@
       <h2>Admin</h2>
       <div class="cards" id="col-admin"></div>
     </section>
+    <section class="column" data-status="awaiting_hitl" id="col-awaiting_hitl">
+      <h2>Awaiting HITL</h2>
+      <div class="cards" id="col-awaiting_hitl-cards"></div>
+    </section>
     <section class="column" data-status="completed">
       <h2>Done</h2>
       <div class="cards" id="col-completed"></div>
@@ -90,6 +94,7 @@
             <button class="tab-btn" data-tab="tools">Tools <span class="tab-count" id="count-tools"></span></button>
             <button class="tab-btn" data-tab="events">Events <span class="tab-count" id="count-events"></span></button>
           </nav>
+          <div id="detail-state" class="state-panel"></div>
           <div class="tab-panel" data-tab="log">
             <div class="tab-status"><span id="logs-status" class="muted"></span></div>
             <pre id="logs"></pre>

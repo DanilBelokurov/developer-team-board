@@ -3,17 +3,27 @@
 //   - manages ticket state in lowdb (board.json)
 //   - creates git worktrees per ticket
 //   - spawns `qwen -p "/devteam:build ..."` per ticket and supervises the subprocess
-//   - parses emit-strings from stdout to update ticket stage
+//   - reads .devteam/plans/<id>/state.md (authoritative pipeline state)
+//   - parses stream-json events from qwen-cli stdout (enrichment: substage,
+//     tool_calls, thinking, logs)
 //   - serves a REST API + static UI on PORT
 //
-// All cross-process contracts with devteam are:
-//   (a) stdout emit-strings (state)
-//   (b) .devteam/plans/<id>/{analysis.md,stage2.merge.md} (artifacts)
-//   (c) git worktree state (isolation)
-// HITL is pre-flight only in v1 (see src/hitl.js).
+// Cross-process contracts with devteam, in priority order:
+//   (a) .devteam/plans/<id>/state.md         (authoritative — Pipeline
+//                                              status / Current stage /
+//                                              per-stage rows / HITL)
+//   (b) .devteam/plans/<id>/{analysis.md,
+//                            stage2.merge.md,
+//                            hitl.md,
+//                            plans/NN-review-N.md}  (artifacts for the UI)
+//   (c) stream-json stdout events            (enrichment: substage,
+//                                              thinking, tool calls, logs)
+//   (d) git worktree state                   (isolation)
+//
+// state.md wins over (c) whenever they disagree. Stream-json can set
+// substage / lastActivityAt, but it cannot change status / stage.
 
 import express from 'express';
-import chokidar from 'chokidar';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -23,6 +33,9 @@ import { createWorktree, removeWorktree } from './worktree.js';
 import { startPipeline, getLogs, cancelPipeline } from './pipeline.js';
 import { writeHitlResponse } from './hitl.js';
 import { listProjects, getProjectsRoot } from './projects.js';
+import { createStateWatcher, discoverPlanDirs } from './state-watcher.js';
+import { stateToBoardState, parseStateMd } from './state-parser.js';
+import { exportVocab, isTerminal, STAGE_IDS, lookup as vocabLookup, PIPELINE_STATUS, STAGE_STATUS, HITL_ACTION } from './state-vocab.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
@@ -34,19 +47,115 @@ const STAGES = ['analytics', 'development', 'testing', 'admin'];
 
 // --- State transitions ----------------------------------------------------
 
+/**
+ * Apply a StateSnapshot from state.md to the ticket. This is the
+ * authoritative path: any value that comes from state.md wins over
+ * stream-json. Returns true if any board-visible field changed.
+ *
+ * @param {object} ticket
+ * @param {import('./state-parser.js').StateSnapshot} snap
+ */
+function applyStateSnapshot(ticket, snap) {
+  if (!snap) return false;
+  const now = Date.now();
+  const before = {
+    status: ticket.status,
+    stage: ticket.stage,
+    stagesCompleted: ticket.stagesCompleted,
+    stagesSkipped: ticket.stagesSkipped,
+    pipelineStatus: ticket.pipelineStatus,
+    hitlAction: ticket.hitlAction,
+    hitlState: ticket.hitlState,
+    planId: ticket.planId,
+    feature: ticket.feature,
+  };
+
+  const board = stateToBoardState(snap);
+  ticket.pipelineStatus = snap.pipelineStatus;
+  ticket.currentStage = snap.currentStage;
+  ticket.hitlState = snap.hitlState;
+  ticket.hitlAction = snap.hitlAction;
+  ticket.stagesCompleted = board.stagesCompleted;
+  ticket.stagesSkipped = board.stagesSkipped;
+  // Raw per-stage status from state.md — lets the UI render per-stage
+  // pills with full fidelity (pending/in_progress/failed/skipped/completed),
+  // not just the collapsed completed/skipped arrays.
+  ticket.stages = { ...snap.stages };
+  ticket.status = board.status;
+  ticket.stage = board.stage;
+  ticket.lastActivityAt = now;
+
+  // Bind / refresh the canonical planId. We only switch planId away from
+  // the legacy `plan-<ts>-<uuid>` once; after that, we trust state.md.
+  if (snap.planId && snap.planId !== ticket.planId) {
+    if (!ticket.planIdBoundAt || ticket.planId.startsWith('plan-')) {
+      ticket.planId = snap.planId;
+      ticket.planIdBoundAt = now;
+    }
+  }
+  if (snap.feature && (!ticket.feature || ticket.feature !== snap.feature)) {
+    ticket.feature = snap.feature;
+  }
+  if (snap.created) ticket.stateCreated = snap.created;
+  if (snap.updated) ticket.stateUpdated = snap.updated;
+  if (snap.lastEvent) ticket.lastStateEvent = snap.lastEvent;
+
+  const after = {
+    status: ticket.status,
+    stage: ticket.stage,
+    stagesCompleted: ticket.stagesCompleted,
+    stagesSkipped: ticket.stagesSkipped,
+    pipelineStatus: ticket.pipelineStatus,
+    hitlAction: ticket.hitlAction,
+    hitlState: ticket.hitlState,
+    planId: ticket.planId,
+    feature: ticket.feature,
+  };
+  return !shallowEqual(before, after);
+}
+
+function shallowEqual(a, b) {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (Array.isArray(a[k]) || Array.isArray(b[k])) {
+      if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return false;
+    } else if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+/**
+ * Apply a stream-json event. This is the enrichment path: substage,
+ * lastActivityAt, toolCalls, thinking, sessionId, usage, etc.
+ *
+ * Status / stage / stagesCompleted are NOT modified here once state.md
+ * has bound a real planId — that is the priority rule. Before binding,
+ * we fall back to event-driven transitions so the UI is alive while
+ * waiting for state.md to appear.
+ */
 function applyEvent(ticket, emit) {
   const now = Date.now();
-  switch (emit.kind || emit.type) {
+  const kind = emit.kind || emit.type;
+  const stateBound = !!(ticket.planIdBoundAt || (ticket.planId && !ticket.planId.startsWith('plan-')));
+
+  switch (kind) {
     case 'stage_started':
+      ticket.lastActivityAt = now;
+      if (stateBound) {
+        // state.md will own the status; we only update substage and timestamp.
+        if (emit.stage) ticket.substage = emit.stage;
+        return true;
+      }
       ticket.stage = emit.stage;
       ticket.substage = null;
       ticket.status = 'running';
-      ticket.lastActivityAt = now;
       return true;
     case 'stage_completed':
+      ticket.lastActivityAt = now;
+      if (stateBound) return true;
       ticket.stage = emit.stage;
       ticket.stagesCompleted = Array.from(new Set([...(ticket.stagesCompleted || []), emit.stage]));
-      ticket.lastActivityAt = now;
       const idx = STAGES.indexOf(emit.stage);
       if (idx === STAGES.length - 1) {
         ticket.status = 'completed';
@@ -56,30 +165,40 @@ function applyEvent(ticket, emit) {
       }
       return true;
     case 'stage_failed':
+      ticket.lastActivityAt = now;
+      if (stateBound) {
+        ticket.failureReason = `${emit.stage}: ${emit.raw}`;
+        return true;
+      }
       ticket.status = 'failed';
       ticket.failureReason = `${emit.stage}: ${emit.raw}`;
       ticket.finishedAt = now;
       return true;
     case 'substage':
-      ticket.substage = emit.groups[0];
+      ticket.substage = emit.groups?.[0] || ticket.substage;
       ticket.lastActivityAt = now;
       return true;
     case 'task_complete':
+      ticket.lastActivityAt = now;
+      if (stateBound) return true;
       ticket.status = 'completed';
       ticket.finishedAt = now;
       return true;
     case 'exit':
-      if (ticket.status === 'running' || ticket.status === 'awaiting_approval') {
+      ticket.exitCode = emit.code;
+      ticket.exitSignal = emit.signal;
+      ticket.lastActivityAt = now;
+      // If state.md has not bound yet, treat exit as terminal.
+      if (!stateBound && (ticket.status === 'running' || ticket.status === 'awaiting_approval' || ticket.status === 'backlog')) {
         ticket.status = emit.code === 0 ? 'completed' : 'failed';
         ticket.finishedAt = now;
       }
-      ticket.exitCode = emit.code;
-      ticket.exitSignal = emit.signal;
       return true;
     case 'hitl_paused':
-      ticket.status = 'awaiting_approval';
-      ticket.hitlReason = emit.groups?.[0] || emit.raw;
       ticket.lastActivityAt = now;
+      ticket.hitlReason = emit.groups?.[0] || emit.raw;
+      if (stateBound) return true;
+      ticket.status = 'awaiting_approval';
       return true;
   }
   return false;
@@ -134,40 +253,132 @@ const onEvent = (planId, ticketId, emit) => {
 const onExit = (ticketId, code, signal) => {
   const t = getTicket(ticketId);
   if (!t) return;
-  if (t.status === 'running') {
+  // Only treat exit as terminal if no state.md is bound.
+  const stateBound = !!(t.planIdBoundAt || (t.planId && !t.planId.startsWith('plan-')));
+  if (!stateBound && t.status === 'running') {
     t.status = code === 0 ? 'completed' : 'failed';
     t.finishedAt = Date.now();
-    t.exitCode = code;
-    t.exitSignal = signal;
-    upsertTicket(t);
   }
+  t.exitCode = code;
+  t.exitSignal = signal;
+  upsertTicket(t);
 };
 
-// --- Watcher: .devteam/plans/<id>/* for artifacts -------------------------
+// --- Watcher: .devteam/plans/<id>/* for state.md + artifacts --------------
+//
+// Replaces the legacy chokidar watcher. The new watcher:
+//   1. Discovers plan dirs on attach (so resume picks up existing state.md).
+//   2. Watches state.md and applies snapshots via applyStateSnapshot.
+//   3. Continues to report analysis.md, stage2.merge.md, hitl.md, and
+//      plans/*.md review files as artifacts.
 
-const watchers = new Map(); // ticketId -> chokidar watcher
+const watchers = new Map();   // ticketId -> { close, scan, getSnapshots }
+const snapshots = new Map();  // planId -> latest StateSnapshot
+
+function pickPlanIdForTicket(ticket, planIds) {
+  // If the ticket already has a bound planId (devTeam format), keep it.
+  if (ticket.planId && !ticket.planId.startsWith('plan-')) {
+    if (planIds.includes(ticket.planId)) return ticket.planId;
+  }
+  // Else prefer the one whose state.md feature matches the ticket title.
+  // Fall back to the most recently created plan dir (lexicographic — fine
+  // because devTeam planIds encode the timestamp suffix in the hash).
+  if (planIds.length === 0) return null;
+  if (planIds.length === 1) return planIds[0];
+  for (const id of planIds) {
+    const snap = snapshots.get(id);
+    if (snap && snap.feature && ticket.title && snap.feature === ticket.title) {
+      return id;
+    }
+  }
+  return [...planIds].sort().pop();
+}
+
+function applyArtifactToTicket(ticket, planId, kind, path) {
+  if (ticket.planId && ticket.planId !== planId && !ticket.planId.startsWith('plan-')) {
+    // Another ticket already owns this planId — don't claim it.
+    return false;
+  }
+  switch (kind) {
+    case 'analysis':
+      ticket.analysisPath = path;
+      return true;
+    case 'stage2_merge':
+      ticket.stage2MergePath = path;
+      return true;
+    case 'hitl':
+      ticket.hitlPath = path;
+      return true;
+    case 'review':
+      ticket.reviewFiles = Array.from(new Set([...(ticket.reviewFiles || []), path])).slice(-20);
+      return true;
+  }
+  return false;
+}
 
 function startWatcher(ticket) {
   if (watchers.has(ticket.id)) return;
-  const plansDir = join(ticket.worktreePath, '.devteam', 'plans');
-  const w = chokidar.watch(plansDir, {
-    ignored: (p) => p.includes('/hitl/'),
-    ignoreInitial: false,
-    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-  });
-  w.on('add', (path) => {
-    if (path.endsWith('analysis.md') && !ticket.analysisPath) {
-      patchTicket(ticket.id, { analysisPath: path });
-    } else if (path.endsWith('stage2.merge.md') && !ticket.stage2MergePath) {
-      patchTicket(ticket.id, { stage2MergePath: path });
+
+  let watcher = null;
+  let owningPlanId = ticket.planId && !ticket.planId.startsWith('plan-') ? ticket.planId : null;
+
+  const handle = async () => {
+    const t = getTicket(ticket.id);
+    if (!t) return;
+    const planIds = watcher ? Array.from(watcher.getPlanDirs().keys()) : [];
+    if (!owningPlanId) {
+      owningPlanId = pickPlanIdForTicket(t, planIds);
+      if (owningPlanId) t.planId = owningPlanId;
     }
+    if (owningPlanId) {
+      const snap = snapshots.get(owningPlanId);
+      if (snap) {
+        const changed = applyStateSnapshot(t, snap);
+        if (changed) {
+          console.log(`[state] ${ticket.id} -> ${snap.pipelineStatus} / ${snap.currentStage} / hitlAction=${snap.hitlAction}`);
+        }
+      }
+    }
+    upsertTicket(t);
+  };
+
+  watcher = createStateWatcher({
+    worktreePath: ticket.worktreePath,
+    onSnapshot: (evt) => {
+      snapshots.set(evt.planId, evt.snapshot);
+      // Only act if this planId is the one we own (or none yet).
+      if (!owningPlanId || owningPlanId === evt.planId) {
+        handle();
+      }
+    },
+    onPlanDiscovered: (evt) => {
+      // When a new plan dir shows up, re-evaluate ownership.
+      handle();
+    },
+    onArtifact: (evt) => {
+      const t = getTicket(ticket.id);
+      if (!t) return;
+      if (!owningPlanId || owningPlanId === evt.planId) {
+        if (applyArtifactToTicket(t, evt.planId, evt.file, evt.path)) {
+          upsertTicket(t);
+        }
+      }
+    },
   });
-  watchers.set(ticket.id, w);
+  watchers.set(ticket.id, watcher);
+
+  // Initial scan — picks up state.md that existed before the watcher
+  // started (e.g. on board restart with in-flight tickets).
+  watcher.scan().then(() => handle()).catch((e) => {
+    console.warn(`[watcher] initial scan failed for ${ticket.id}: ${e.message || e}`);
+  });
 }
 
-function stopWatcher(ticketId) {
+async function stopWatcher(ticketId) {
   const w = watchers.get(ticketId);
-  if (w) { w.close(); watchers.delete(ticketId); }
+  if (!w) return;
+  watchers.delete(ticketId);
+  try { await w.close(); } catch { /* ignore */ }
 }
 
 // --- HTTP API -------------------------------------------------------------
@@ -177,6 +388,11 @@ app.use(express.json({ limit: '256kb' }));
 app.use(express.static(PUBLIC_DIR));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, tickets: listTickets().length }));
+
+// DevTeam pipeline vocabulary — frontend uses this to render columns and
+// badges dynamically, so adding a new state value in devTeam doesn't
+// require frontend changes.
+app.get('/api/vocab', (_req, res) => res.json(exportVocab()));
 
 app.get('/api/projects', async (_req, res) => {
   res.json(await listProjects());
@@ -194,7 +410,7 @@ app.get('/api/tickets/:id/logs', (req, res) => {
   const t = getTicket(req.params.id);
   if (!t) return res.status(404).json({ error: 'not_found' });
   const since = parseInt(req.query.since || '0', 10);
-  const { lines, total } = getLogs(t.planId, since);
+  const { lines, total } = getLogs(t.id, since);
   res.json({ lines, total, since: total });
 });
 
@@ -230,10 +446,24 @@ app.post('/api/tickets', async (req, res) => {
     base,
     noNewBranch,
     planId,
+    planIdBoundAt: null,  // set when state.md binds a real devTeam planId
     status: 'backlog',
     stage: null,
+    currentStage: null,
     substage: null,
     stagesCompleted: [],
+    stagesSkipped: [],
+    // Raw per-stage status from state.md (analytics/development/testing/admin
+    // → pending|in_progress|completed|failed|skipped).
+    stages: { analytics: null, development: null, testing: null, admin: null },
+    // Authoritative state.md values (null until state.md is read).
+    pipelineStatus: null,
+    hitlState: null,
+    hitlAction: null,
+    stateCreated: null,
+    stateUpdated: null,
+    lastStateEvent: null,
+    feature: null,  // mirrored from state.md (overrides title on hit)
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
     qwenPid: null,
@@ -243,6 +473,8 @@ app.post('/api/tickets', async (req, res) => {
     hitlReason: null,
     analysisPath: null,
     stage2MergePath: null,
+    hitlPath: null,
+    reviewFiles: [],
     events: [],
     // Stream-json enrichment (filled at runtime).
     sessionId: null,
@@ -301,6 +533,12 @@ app.post('/api/tickets/:id/resume', async (req, res) => {
     lastActivityAt: Date.now(),
   };
   patchTicket(t.id, patch);
+  // The legacy planId is replaced by a fresh one on resume. The watcher's
+  // closure-captured owningPlanId would block state.md rebinding, so we
+  // tear it down and start a new one — it will re-scan and pick up the
+  // real devTeam planId once state.md appears.
+  await stopWatcher(t.id);
+  startWatcher(getTicket(t.id));
   try {
     const child = startPipeline({
       ticket: { ...t, title: prompt, _resumePrompt: prompt },

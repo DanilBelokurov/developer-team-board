@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { parseStreamJsonEvent } from './emit-parser.js';
 
-const logBuffers = new Map(); // planId -> { lines: string[], offset: number }
+const logBuffers = new Map(); // ticketId -> { lines: string[], offset: number, planIdAtSpawn }
 const children = new Map();   // ticketId -> ChildProcess
 
 const BUFFER_MAX = 2000;
@@ -23,14 +23,19 @@ export function startPipeline({ ticket, planId, worktreePath, qwenBin = 'qwen', 
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  logBuffers.set(planId, { lines: [], offset: 0 });
+  // Key the log buffer on ticketId, NOT planId — the ticket's planId may
+  // be rebound by the state-watcher when state.md is read (the legacy
+  // `plan-<ts>-<uuid>` placeholder is replaced with the real devTeam
+  // `<slug>-<6hex>`). Keying on ticketId keeps the log stream attached
+  // to the ticket across the rebind.
+  logBuffers.set(ticket.id, { lines: [], offset: 0, planIdAtSpawn: planId });
   children.set(ticket.id, child);
 
   let lineBuf = '';
   let stderrBuf = '';
 
   const processLine = (line, isErr) => {
-    const buf = logBuffers.get(planId);
+    const buf = logBuffers.get(ticket.id);
     if (isErr) {
       buf.lines.push(`[stderr] ${line}`);
       if (buf.lines.length > BUFFER_MAX) buf.lines.shift();
@@ -77,7 +82,7 @@ export function startPipeline({ ticket, planId, worktreePath, qwenBin = 'qwen', 
     onExit(ticket.id, code, signal);
     // keep buffer for a grace period so UI can still fetch logs
     setTimeout(() => {
-      logBuffers.delete(planId);
+      logBuffers.delete(ticket.id);
       children.delete(ticket.id);
     }, 60_000);
   });
@@ -85,8 +90,8 @@ export function startPipeline({ ticket, planId, worktreePath, qwenBin = 'qwen', 
   return child;
 }
 
-export function getLogs(planId, since = 0) {
-  const buf = logBuffers.get(planId);
+export function getLogs(ticketId, since = 0) {
+  const buf = logBuffers.get(ticketId);
   if (!buf) return { lines: [], total: 0 };
   return { lines: buf.lines.slice(since), total: buf.lines.length };
 }
